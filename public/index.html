@@ -77,6 +77,7 @@
   let stream = null;
   let recorder = null;
   let recMime = null;
+  let initSegment = null; // first chunk with codec configuration
   let wakeLock = null;
 
   // rolling buffer of chunks: { blob, time }
@@ -159,11 +160,16 @@
     const startTs = now - fromMsAgo;
     const endTs = now - toMsAgo;
     const selected = chunkBuffer.filter(c => c.time >= startTs && c.time <= endTs).map(c => c.blob);
-    return new Blob(selected, { type: recMime || 'video/webm' });
+    if (selected.length === 0) return new Blob([], { type: recMime || 'video/webm' });
+    const parts = [];
+    if (initSegment && !selected.includes(initSegment)) parts.push(initSegment);
+    parts.push(...selected);
+    return new Blob(parts, { type: recMime || 'video/webm' });
   }
 
   async function startRecording() {
     recMime = bestMime();
+    initSegment = null;
     if (!('MediaRecorder' in window)) {
       log('MediaRecorder not supported in this browser.');
       alert('MediaRecorder not supported here.');
@@ -179,6 +185,7 @@
 
     recorder.ondataavailable = (ev) => {
       if (ev.data && ev.data.size > 0) {
+        if (!initSegment) initSegment = ev.data;
         const entry = { blob: ev.data, time: Date.now() };
         chunkBuffer.push(entry);
         trimBuffer();
@@ -266,7 +273,15 @@
       } else if (isClear) {
         // If we’re past window end and we have a pending clip, finalize it
         if (pendingAutoClip && nowTs > captureWindowActiveUntil) {
-          const clipBlob = new Blob(pendingAutoClip.chunks, { type: recMime || 'video/webm' });
+          const recordedChunks = pendingAutoClip.chunks.filter(Boolean);
+          if (recordedChunks.length === 0) {
+            pendingAutoClip = null;
+            return;
+          }
+          const parts = [];
+          if (initSegment && !recordedChunks.includes(initSegment)) parts.push(initSegment);
+          parts.push(...recordedChunks);
+          const clipBlob = new Blob(parts, { type: recMime || 'video/webm' });
           downloadBlob(clipBlob, 'motion');
           log('Motion clip saved.');
           pendingAutoClip = null;
