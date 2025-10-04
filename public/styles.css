@@ -149,7 +149,7 @@ body::after {
 .app-main {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: clamp(20px, 4vw, 36px);
   padding: 0 clamp(20px, 5vw, 48px) clamp(28px, 5vw, 48px);
 }
@@ -316,8 +316,7 @@ button:disabled {
 }
 
 .event-panel {
-  display: flex;
-  align-items: stretch;
+  display: none !important;
 }
 
 .panel-card {
@@ -355,7 +354,7 @@ button:disabled {
 
 @media (max-width: 1200px) {
   .app-main {
-    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
