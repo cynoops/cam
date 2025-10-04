@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">CYNOOPS Camera Icon Large</title>
+  <desc id="desc">Large camera glyph on a gradient tile</desc>
+  <defs>
+    <linearGradient id="bg512" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#001f3f" />
+      <stop offset="100%" stop-color="#004f9f" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="110" fill="url(#bg512)" />
+  <g fill="none" stroke="#f4faff" stroke-width="26" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M138 200h236c17 0 30 13 30 30v136c0 17-13 30-30 30H138c-17 0-30-13-30-30V230c0-17 13-30 30-30z" />
+    <path d="M190 168l22-42h98l22 42" />
+    <circle cx="256" cy="310" r="70" fill="#f4faff" stroke="#f4faff" />
+    <circle cx="256" cy="310" r="44" fill="#001f3f" stroke="none" />
+  </g>
+  <circle cx="372" cy="224" r="22" fill="#f4faff" />
+</svg>
