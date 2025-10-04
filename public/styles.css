@@ -389,7 +389,9 @@ button:disabled {
 }
 
 .event-panel {
-  display: none !important;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
 }
 
 .panel-card {
@@ -478,6 +480,10 @@ button:disabled {
 
   button {
     padding: 16px;
+  }
+
+  .event-panel {
+    display: none;
   }
 }
 
