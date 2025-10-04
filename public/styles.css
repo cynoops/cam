@@ -74,6 +74,9 @@
   --trackers-sidebar-w: 0px;
   --radius: 12px;
   --shadow: 0 18px 42px rgba(0,0,0,.35);
+  --camera-max-width: 960px;
+  --camera-max-height: 72vh;
+  --camera-aspect: 16 / 9;
 }
 
 *,
@@ -110,26 +113,57 @@ body::after {
 .app {
   flex: 1 1 auto;
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
   position: relative;
   isolation: isolate;
 }
 
 .app-header {
-  padding: clamp(16px, 3vw, 32px) clamp(20px, 5vw, 48px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: calc(16px + env(safe-area-inset-top, 0px)) clamp(20px, 5vw, 48px) 16px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 16px;
-  position: relative;
-  z-index: 4;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.55) 70%, rgba(0, 0, 0, 0) 100%);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.app-header nav,
+.app-header .header-actions {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.app-header nav {
+  left: clamp(20px, 5vw, 48px);
+}
+
+.app-header nav:empty,
+.app-header .header-actions:empty {
+  display: none;
+}
+
+.app-header .header-actions {
+  right: clamp(20px, 5vw, 48px);
 }
 
 .title-stack {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  align-items: center;
+  text-align: center;
 }
 
 .title-stack h1 {
@@ -147,29 +181,34 @@ body::after {
 }
 
 .app-main {
-  flex: 1 1 auto;
+  width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-content: start;
   gap: clamp(20px, 4vw, 36px);
-  padding: 0 clamp(20px, 5vw, 48px) clamp(28px, 5vw, 48px);
+  padding: clamp(18px, 4vw, 40px) clamp(20px, 5vw, 48px) calc(clamp(32px, 6vw, 64px) + 160px);
 }
 
 .camera-view {
   position: relative;
   display: flex;
-  align-items: stretch;
   justify-content: center;
+  width: min(100%, var(--camera-max-width));
 }
 
 .video-shell {
   position: relative;
-  flex: 1 1 auto;
+  width: min(100%, var(--camera-max-width));
+  max-height: min(var(--camera-max-height), 820px);
+  aspect-ratio: var(--camera-aspect);
   border-radius: clamp(18px, 2vw, 28px);
   overflow: hidden;
   background: radial-gradient(120% 120% at 50% 10%, rgba(93, 116, 148, 0.35) 0%, rgba(10, 18, 30, 0.95) 70%);
   box-shadow: var(--shadow);
-  min-height: clamp(420px, 62vh, 720px);
   isolation: isolate;
+  display: flex;
+  flex-direction: column;
 }
 
 #preview {
@@ -233,7 +272,7 @@ body::after {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 18px;
+  gap: 14px;
 }
 
 .meter {
@@ -255,9 +294,11 @@ body::after {
 
 .control-panel {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
   pointer-events: auto;
+  width: min(100%, var(--camera-max-width));
+  margin: 0 auto;
 }
 
 button {
@@ -313,6 +354,38 @@ button:disabled {
   color: var(--muted);
   font-size: 0.85rem;
   pointer-events: auto;
+  text-align: center;
+}
+
+.app-actions {
+  position: sticky;
+  bottom: 0;
+  width: 100%;
+  margin-top: auto;
+  padding: clamp(18px, 4vw, 32px) clamp(20px, 5vw, 48px) calc(24px + env(safe-area-inset-bottom, 0px));
+  display: grid;
+  gap: 16px;
+  align-items: center;
+  justify-items: center;
+  background: linear-gradient(180deg, rgba(4, 8, 16, 0.78) 0%, rgba(2, 6, 14, 0.92) 100%);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  z-index: 9;
+  isolation: isolate;
+}
+
+.app-actions::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.12) 100%);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.app-actions > * {
+  position: relative;
+  z-index: 1;
 }
 
 .event-panel {
@@ -368,88 +441,59 @@ button:disabled {
 }
 
 @media (max-width: 900px) {
+  :root {
+    --camera-max-width: 640px;
+    --camera-max-height: 68vh;
+  }
+
   body {
     background: var(--color-black);
   }
+
   body::after {
     opacity: 0.4;
   }
+
   .app {
     background: var(--color-black);
   }
-  .app-header {
-    position: absolute;
-    top: env(safe-area-inset-top, 0px);
-    left: 0;
-    right: 0;
-    padding: calc(12px + env(safe-area-inset-top, 0px)) clamp(18px, 6vw, 28px) 12px;
-    background: linear-gradient(180deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.4) 72%, rgba(0, 0, 0, 0) 100%);
-    pointer-events: none;
-  }
-  .title-stack {
-    pointer-events: auto;
-  }
-  .title-stack .subtitle {
-    font-size: 0.9rem;
-  }
+
   .app-main {
-    position: relative;
-    display: block;
-    padding: 0;
-    flex: 1 1 auto;
+    padding: clamp(16px, 5vw, 32px) clamp(18px, 6vw, 28px) calc(clamp(28px, 6vw, 60px) + 140px);
   }
-  .camera-view {
-    height: 100vh;
-    height: 100svh;
-  }
-  .video-shell {
-    border-radius: 0;
-    min-height: 100%;
-    height: 100%;
-    box-shadow: none;
-  }
+
   .hud {
     padding: clamp(18px, 6vw, 32px);
     background: linear-gradient(180deg, rgba(0, 0, 0, 0.72) 0%, rgba(0, 0, 0, 0.28) 28%, rgba(0, 0, 0, 0.75) 100%);
   }
-  .hud-bottom {
-    gap: 16px;
+
+  .app-actions {
+    padding: clamp(20px, 6vw, 32px) clamp(18px, 6vw, 28px) calc(26px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -18px 42px rgba(0, 0, 0, 0.55);
   }
+
   .control-panel {
-    background: rgba(8, 16, 24, 0.72);
-    border-radius: 22px;
-    padding: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(22px);
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
+
   button {
     padding: 16px;
   }
-  .hint {
-    text-align: center;
-    color: var(--color-primary-light);
-    text-shadow: 0 6px 18px rgba(0, 0, 0, 0.6);
+}
+
+@media (orientation: portrait) {
+  :root {
+    --camera-max-width: min(92vw, 520px);
+    --camera-max-height: min(64vh, 620px);
+    --camera-aspect: 3 / 4;
   }
-  .event-panel {
-    position: absolute;
-    inset: auto clamp(18px, 6vw, 30px) clamp(140px, 25vh, 240px) clamp(18px, 6vw, 30px);
-    z-index: 2;
-    pointer-events: none;
+
+  .app-main {
+    padding-top: clamp(18px, 6vw, 36px);
   }
-  .panel-card {
-    pointer-events: auto;
-    background: rgba(6, 12, 20, 0.82);
-    border-radius: 20px;
-    padding: 18px;
-    max-height: clamp(160px, 30vh, 220px);
-    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
-  }
-  .panel-card h2 {
-    font-size: 0.95rem;
-  }
-  .log {
-    background: rgba(2, 10, 18, 0.82);
+
+  .hud {
+    padding: clamp(16px, 5vw, 28px);
   }
 }
 
