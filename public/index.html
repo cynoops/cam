@@ -27,7 +27,7 @@
               <div class="badge-row">
                 <span class="badge" id="mimeBadge">—</span>
                 <span class="badge" id="motionBadge">motion: 0</span>
-                <span class="badge" id="bufferBadge">buffer: 0s</span>
+                <span class="badge" id="bufferBadge">recording: idle</span>
               </div>
               <span class="badge badge-live" id="recBadge" style="visibility:hidden">● recording</span>
             </div>
@@ -72,13 +72,12 @@
   const mimeBadge = document.getElementById('mimeBadge');
 
   // Tunables
-  const PRE_BUFFER_SECONDS = 5;       // keep this much history
-  const POST_BUFFER_SECONDS = 60;     // save up to this long after motion ends
-  const TIMESLICE_MS = 300;           // chunk size from MediaRecorder
-  const MOTION_SAMPLE_MS = 160;       // how often we sample frames
-  const PIXEL_DIFF_THRESHOLD = 26;    // per-channel diff threshold [0..255]
-  const MOTION_RATIO_TRIGGER = 0.015; // proportion of changed pixels to trigger motion (1.5%)
-  const MOTION_RATIO_CLEAR   = 0.006; // lower threshold to consider “motion ended” (0.6%)
+  const TIMESLICE_MS = 300;               // chunk size from MediaRecorder
+  const MOTION_SAMPLE_MS = 160;           // how often we sample frames
+  const PIXEL_DIFF_THRESHOLD = 26;        // per-channel diff threshold [0..255]
+  const MOTION_START_THRESHOLD = 0.10;    // begin recording once ≥10% of sampled pixels change
+  const MOTION_STOP_THRESHOLD = 0.03;     // consider motion low when ≤3% of pixels change
+  const MOTION_STOP_DELAY_MS = 15_000;    // require low motion for 15s before stopping
 
   let stream = null;
   let recorder = null;
@@ -86,16 +85,15 @@
   let initSegment = null; // first chunk with codec configuration
   let wakeLock = null;
 
-  // rolling buffer of chunks: { blob, time }
+  // rolling buffer of recorded blobs while motion is active
   const chunkBuffer = [];
   let bufferDurationMs = 0;
 
   // motion detection state
   let motionDetectionEnabled = true;
   let lastFrameData = null;
-  let lastMotionTs = 0;
-  let captureWindowActiveUntil = 0; // timestamp until which we’ll keep saving
-  let pendingAutoClip = null; // collects chunks while window active
+  let recordingActive = false;
+  let lowMotionStartTs = 0;
 
   function log(msg){
     const line = document.createElement('div');
@@ -129,23 +127,48 @@
   }
 
   function updateBufferStats() {
-    // Sum duration by counting chunks * timeslice (rough estimate),
-    // or by timestamps between first and last chunk.
-    if (chunkBuffer.length >= 2) {
-      const ms = chunkBuffer[chunkBuffer.length-1].time - chunkBuffer[0].time + TIMESLICE_MS;
-      bufferDurationMs = ms;
+    bufferDurationMs = chunkBuffer.length * TIMESLICE_MS;
+    if (recordingActive) {
+      bufferBadge.textContent = `recording: ${(bufferDurationMs / 1000).toFixed(1)}s`;
     } else {
-      bufferDurationMs = chunkBuffer.length * TIMESLICE_MS;
+      bufferBadge.textContent = 'recording: idle';
     }
-    bufferBadge.textContent = `buffer: ${(bufferDurationMs/1000).toFixed(1)}s`;
+    saveBtn.disabled = !recordingActive || chunkBuffer.length === 0;
   }
 
-  function trimBuffer() {
-    const cutoff = Date.now() - PRE_BUFFER_SECONDS * 1000;
-    while (chunkBuffer.length && chunkBuffer[0].time < cutoff) {
-      chunkBuffer.shift();
-    }
+  function beginMotionRecording() {
+    if (recordingActive) return;
+    recordingActive = true;
+    lowMotionStartTs = 0;
+    chunkBuffer.length = 0;
+    bufferDurationMs = 0;
     updateBufferStats();
+    recBadge.style.visibility = 'visible';
+    if (!startRecording()) {
+      recordingActive = false;
+      recBadge.style.visibility = 'hidden';
+      updateBufferStats();
+      return;
+    }
+    log('Motion recording started.');
+  }
+
+  function endMotionRecording(message = 'Motion recording stopped.') {
+    if (!recordingActive) return;
+    recordingActive = false;
+    lowMotionStartTs = 0;
+    chunkBuffer.length = 0;
+    bufferDurationMs = 0;
+    updateBufferStats();
+    recBadge.style.visibility = 'hidden';
+    if (recorder && recorder.state === 'recording') {
+      try {
+        recorder.stop();
+      } catch (e) {
+        log('Failed to stop recorder: ' + e.message);
+      }
+    }
+    log(message);
   }
 
   function downloadBlob(blob, prefix='clip') {
@@ -160,50 +183,68 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
-  function collectClip(fromMsAgo, toMsAgo=0) {
-    // Gather chunks within [now - fromMsAgo, now - toMsAgo]
-    const now = Date.now();
-    const startTs = now - fromMsAgo;
-    const endTs = now - toMsAgo;
-    const selected = chunkBuffer.filter(c => c.time >= startTs && c.time <= endTs).map(c => c.blob);
-    if (selected.length === 0) return new Blob([], { type: recMime || 'video/webm' });
+  function collectClip() {
+    if (chunkBuffer.length === 0) return null;
     const parts = [];
-    if (initSegment && !selected.includes(initSegment)) parts.push(initSegment);
-    parts.push(...selected);
+    if (initSegment) parts.push(initSegment);
+    parts.push(...chunkBuffer);
     return new Blob(parts, { type: recMime || 'video/webm' });
   }
 
-  async function startRecording() {
-    recMime = bestMime();
-    initSegment = null;
+  function startRecording() {
     if (!('MediaRecorder' in window)) {
       log('MediaRecorder not supported in this browser.');
       alert('MediaRecorder not supported here.');
-      return;
+      return false;
     }
+    if (!stream) {
+      log('No media stream available.');
+      return false;
+    }
+
+    initSegment = null;
+
     try {
       recorder = new MediaRecorder(stream, recMime ? { mimeType: recMime, bitsPerSecond: 2_000_000 } : { bitsPerSecond: 2_000_000 });
     } catch (e) {
       log('Failed to create MediaRecorder: ' + e.message);
-      recorder = new MediaRecorder(stream); // last-ditch
-    }
-    mimeBadge.textContent = recMime ? recMime : (recorder.mimeType || 'default');
-
-    recorder.ondataavailable = (ev) => {
-      if (ev.data && ev.data.size > 0) {
-        if (!initSegment) initSegment = ev.data;
-        const entry = { blob: ev.data, time: Date.now() };
-        chunkBuffer.push(entry);
-        trimBuffer();
-        // If capture window is active, also append to pendingAutoClip.chunks
-        if (Date.now() <= captureWindowActiveUntil && pendingAutoClip) {
-          pendingAutoClip.chunks.push(ev.data);
-        }
+      try {
+        recorder = new MediaRecorder(stream);
+      } catch (err) {
+        log('Unable to create MediaRecorder: ' + err.message);
+        recorder = null;
+        return false;
       }
+    }
+
+    const currentRecorder = recorder;
+    mimeBadge.textContent = recMime ? recMime : (currentRecorder.mimeType || 'default');
+
+    currentRecorder.ondataavailable = (ev) => {
+      if (!ev.data || ev.data.size === 0) return;
+      if (!initSegment) initSegment = ev.data;
+      if (!recordingActive) {
+        if (chunkBuffer.length > 0) {
+          chunkBuffer.length = 0;
+          bufferDurationMs = 0;
+          updateBufferStats();
+        }
+        return;
+      }
+      chunkBuffer.push(ev.data);
+      updateBufferStats();
     };
-    recorder.onstart = () => { recBadge.style.visibility = 'visible'; log('Recording started.'); };
-    recorder.onstop  = () => { recBadge.style.visibility = 'hidden'; log('Recording stopped.'); };
-    recorder.start(TIMESLICE_MS);
+
+    currentRecorder.onstop = () => {
+      if (recorder === currentRecorder) {
+        recorder = null;
+      }
+      log('Recorder stopped.');
+    };
+
+    currentRecorder.start(TIMESLICE_MS);
+    log('Recorder started.');
+    return true;
   }
 
   function startMotionLoop() {
@@ -251,47 +292,24 @@
       const totalPx = (len/4);
       const ratio = changed / totalPx;
       motionBadge.textContent = `motion: ${(ratio*100).toFixed(2)}%`;
-      motionBar.style.width = Math.min(100, ratio*500) + '%';
+      motionBar.style.width = Math.min(100, ratio * 100) + '%';
 
-      const nowTs = Date.now();
-      const isMotion = ratio >= MOTION_RATIO_TRIGGER;
-      const isClear  = ratio <= MOTION_RATIO_CLEAR;
+      if (ratio >= MOTION_START_THRESHOLD && !recordingActive) {
+        beginMotionRecording();
+      }
 
-      if (isMotion) {
-        lastMotionTs = nowTs;
-        // If not already in a capture window, start one
-        if (nowTs > captureWindowActiveUntil) {
-          // Start window: include preroll (5s) plus live until we say stop
-          captureWindowActiveUntil = nowTs + POST_BUFFER_SECONDS * 1000;
-          pendingAutoClip = { startedAt: nowTs, chunks: [] };
-
-          // Seed with pre-buffer
-          const preChunks = chunkBuffer
-            .filter(c => c.time >= (nowTs - PRE_BUFFER_SECONDS*1000) && c.time <= nowTs)
-            .map(c => c.blob);
-          pendingAutoClip.chunks.push(...preChunks);
-
-          log('Motion detected: started capture window.');
-        } else {
-          // Extend window because motion continues
-          captureWindowActiveUntil = nowTs + POST_BUFFER_SECONDS * 1000;
-        }
-      } else if (isClear) {
-        // If we’re past window end and we have a pending clip, finalize it
-        if (pendingAutoClip && nowTs > captureWindowActiveUntil) {
-          const recordedChunks = pendingAutoClip.chunks.filter(Boolean);
-          if (recordedChunks.length === 0) {
-            pendingAutoClip = null;
-            return;
+      if (recordingActive) {
+        if (ratio <= MOTION_STOP_THRESHOLD) {
+          if (!lowMotionStartTs) {
+            lowMotionStartTs = Date.now();
+          } else if (Date.now() - lowMotionStartTs >= MOTION_STOP_DELAY_MS) {
+            endMotionRecording('Motion recording stopped (low activity).');
           }
-          const parts = [];
-          if (initSegment && !recordedChunks.includes(initSegment)) parts.push(initSegment);
-          parts.push(...recordedChunks);
-          const clipBlob = new Blob(parts, { type: recMime || 'video/webm' });
-          downloadBlob(clipBlob, 'motion');
-          log('Motion clip saved.');
-          pendingAutoClip = null;
+        } else {
+          lowMotionStartTs = 0;
         }
+      } else {
+        lowMotionStartTs = 0;
       }
     }
     sample();
@@ -310,29 +328,37 @@
     videoEl.srcObject = stream;
 
     await requestWakeLock();
-    await startRecording();
+    recMime = bestMime();
+    mimeBadge.textContent = recMime ? recMime : 'default';
     startMotionLoop();
+    updateBufferStats();
 
     startBtn.disabled = true;
-    saveBtn.disabled = false;
   }
 
   startBtn.addEventListener('click', startCamera);
 
   saveBtn.addEventListener('click', () => {
-    // Save a manual 10s clip ending now (includes prebuffer naturally).
-    const blob = collectClip(10_000, 0);
-    if (blob.size === 0) {
+    if (!recordingActive) {
+      log('No active motion recording to save.');
+      return;
+    }
+    const blob = collectClip();
+    if (!blob || blob.size === 0) {
       log('Nothing to save yet.');
       return;
     }
-    downloadBlob(blob, 'manual');
-    log('Manual 10s clip saved.');
+    downloadBlob(blob, 'motion');
+    log('Motion recording saved.');
   });
 
   toggleMotionBtn.addEventListener('click', () => {
     motionDetectionEnabled = !motionDetectionEnabled;
     toggleMotionBtn.textContent = `Motion: ${motionDetectionEnabled ? 'ON' : 'OFF'}`;
+    if (!motionDetectionEnabled) {
+      lowMotionStartTs = 0;
+      endMotionRecording('Motion detection disabled.');
+    }
     log(`Motion detection ${motionDetectionEnabled ? 'enabled' : 'disabled'}.`);
   });
 
