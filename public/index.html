@@ -49,7 +49,7 @@
     <footer class="app-actions">
       <div class="control-panel">
         <button id="startBtn">Start Camera</button>
-        <button id="saveBtn" class="secondary" disabled>Save 10s Clip</button>
+        <button id="saveBtn" class="secondary" disabled>Save Clip</button>
         <button id="toggleMotionBtn" class="secondary">Motion: ON</button>
       </div>
       <small class="hint">
@@ -73,6 +73,7 @@
 
   // Tunables
   const TIMESLICE_MS = 300;               // chunk size from MediaRecorder
+  const DATA_REQUEST_INTERVAL_MS = 900;   // force chunk delivery for browsers ignoring timeslice
   const MOTION_SAMPLE_MS = 160;           // how often we sample frames
   const PIXEL_DIFF_THRESHOLD = 26;        // per-channel diff threshold [0..255]
   const MOTION_START_THRESHOLD = 0.10;    // begin recording once ≥10% of sampled pixels change
@@ -94,11 +95,22 @@
   let lastFrameData = null;
   let recordingActive = false;
   let lowMotionStartTs = 0;
+  let clipStartTs = 0;
+
+  const pendingDataResolvers = [];
+  let recorderPump = null;
 
   function log(msg){
     const line = document.createElement('div');
     line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
     logEl.prepend(line);
+  }
+
+  function resolvePendingDataResolvers() {
+    while (pendingDataResolvers.length) {
+      const resolve = pendingDataResolvers.shift();
+      resolve();
+    }
   }
 
   function bestMime() {
@@ -127,11 +139,23 @@
   }
 
   function updateBufferStats() {
-    bufferDurationMs = chunkBuffer.length * TIMESLICE_MS;
+    const chunkDurationMs = chunkBuffer.length * TIMESLICE_MS;
+    if (recordingActive && clipStartTs) {
+      bufferDurationMs = Math.max(chunkDurationMs, Date.now() - clipStartTs);
+    } else {
+      bufferDurationMs = chunkDurationMs;
+    }
     if (recordingActive) {
       bufferBadge.textContent = `recording: ${(bufferDurationMs / 1000).toFixed(1)}s`;
+      if (chunkBuffer.length > 0) {
+        const secondsLabel = (chunkDurationMs / 1000).toFixed(1).replace(/\.0$/, '');
+        saveBtn.textContent = `Save ${secondsLabel}s Clip`;
+      } else {
+        saveBtn.textContent = 'Save Clip';
+      }
     } else {
       bufferBadge.textContent = 'recording: idle';
+      saveBtn.textContent = 'Save Clip';
     }
     saveBtn.disabled = !recordingActive || chunkBuffer.length === 0;
   }
@@ -140,6 +164,7 @@
     if (recordingActive) return;
     recordingActive = true;
     lowMotionStartTs = 0;
+    clipStartTs = Date.now();
     chunkBuffer.length = 0;
     bufferDurationMs = 0;
     updateBufferStats();
@@ -157,6 +182,7 @@
     if (!recordingActive) return;
     recordingActive = false;
     lowMotionStartTs = 0;
+    clipStartTs = 0;
     chunkBuffer.length = 0;
     bufferDurationMs = 0;
     updateBufferStats();
@@ -168,6 +194,11 @@
         log('Failed to stop recorder: ' + e.message);
       }
     }
+    if (recorderPump) {
+      clearInterval(recorderPump);
+      recorderPump = null;
+    }
+    resolvePendingDataResolvers();
     log(message);
   }
 
@@ -189,6 +220,29 @@
     if (initSegment) parts.push(initSegment);
     parts.push(...chunkBuffer);
     return new Blob(parts, { type: recMime || 'video/webm' });
+  }
+
+  async function flushRecorderData() {
+    if (!recorder || recorder.state !== 'recording') return;
+    let resolverRef;
+    const waitForChunk = new Promise((resolve) => {
+      resolverRef = () => resolve('chunk');
+      pendingDataResolvers.push(resolverRef);
+    });
+    try {
+      recorder.requestData();
+    } catch (e) {
+      resolvePendingDataResolvers();
+      return;
+    }
+    const result = await Promise.race([
+      waitForChunk,
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), TIMESLICE_MS + 150))
+    ]);
+    if (result === 'timeout' && resolverRef) {
+      const idx = pendingDataResolvers.indexOf(resolverRef);
+      if (idx !== -1) pendingDataResolvers.splice(idx, 1);
+    }
   }
 
   function startRecording() {
@@ -233,16 +287,31 @@
       }
       chunkBuffer.push(ev.data);
       updateBufferStats();
+      resolvePendingDataResolvers();
     };
 
     currentRecorder.onstop = () => {
       if (recorder === currentRecorder) {
         recorder = null;
       }
+      if (recorderPump) {
+        clearInterval(recorderPump);
+        recorderPump = null;
+      }
       log('Recorder stopped.');
     };
 
     currentRecorder.start(TIMESLICE_MS);
+    if (recorderPump) clearInterval(recorderPump);
+    recorderPump = setInterval(() => {
+      if (recorder === currentRecorder && currentRecorder.state === 'recording') {
+        try {
+          currentRecorder.requestData();
+        } catch (e) {
+          // ignore, recorder might be stopping
+        }
+      }
+    }, DATA_REQUEST_INTERVAL_MS);
     log('Recorder started.');
     return true;
   }
@@ -338,11 +407,12 @@
 
   startBtn.addEventListener('click', startCamera);
 
-  saveBtn.addEventListener('click', () => {
+  saveBtn.addEventListener('click', async () => {
     if (!recordingActive) {
       log('No active motion recording to save.');
       return;
     }
+    await flushRecorderData();
     const blob = collectClip();
     if (!blob || blob.size === 0) {
       log('Nothing to save yet.');
