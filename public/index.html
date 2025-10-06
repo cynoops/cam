@@ -97,20 +97,13 @@
   let lowMotionStartTs = 0;
   let clipStartTs = 0;
 
-  const pendingDataResolvers = [];
   let recorderPump = null;
+  let recorderCleanup = null;
 
   function log(msg){
     const line = document.createElement('div');
     line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
     logEl.prepend(line);
-  }
-
-  function resolvePendingDataResolvers() {
-    while (pendingDataResolvers.length) {
-      const resolve = pendingDataResolvers.shift();
-      resolve();
-    }
   }
 
   function bestMime() {
@@ -185,6 +178,7 @@
     clipStartTs = 0;
     chunkBuffer.length = 0;
     bufferDurationMs = 0;
+    initSegment = null;
     updateBufferStats();
     recBadge.style.visibility = 'hidden';
     if (recorder && recorder.state === 'recording') {
@@ -198,7 +192,6 @@
       clearInterval(recorderPump);
       recorderPump = null;
     }
-    resolvePendingDataResolvers();
     log(message);
   }
 
@@ -214,35 +207,58 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
-  function collectClip() {
-    if (chunkBuffer.length === 0) return null;
+  function buildClipBlob(chunks, initChunk) {
+    if (!chunks || chunks.length === 0) return null;
     const parts = [];
-    if (initSegment) parts.push(initSegment);
-    parts.push(...chunkBuffer);
+    if (initChunk && chunks[0] !== initChunk) parts.push(initChunk);
+    parts.push(...chunks);
     return new Blob(parts, { type: recMime || 'video/webm' });
   }
 
-  async function flushRecorderData() {
-    if (!recorder || recorder.state !== 'recording') return;
-    let resolverRef;
-    const waitForChunk = new Promise((resolve) => {
-      resolverRef = () => resolve('chunk');
-      pendingDataResolvers.push(resolverRef);
+  async function captureClipBlob() {
+    const initSnapshot = initSegment;
+    const needRestart = recordingActive;
+
+    if (!recorder || recorder.state !== 'recording') {
+      return buildClipBlob(chunkBuffer.slice(), initSnapshot);
+    }
+
+    const targetRecorder = recorder;
+    const chunksPromise = new Promise((resolve) => {
+      const handleStop = () => {
+        targetRecorder.removeEventListener('stop', handleStop);
+        setTimeout(() => resolve(chunkBuffer.slice()), 0);
+      };
+      targetRecorder.addEventListener('stop', handleStop);
+      try {
+        targetRecorder.stop();
+      } catch (e) {
+        targetRecorder.removeEventListener('stop', handleStop);
+        resolve(chunkBuffer.slice());
+      }
     });
-    try {
-      recorder.requestData();
-    } catch (e) {
-      resolvePendingDataResolvers();
-      return;
+
+    const capturedChunks = await chunksPromise;
+    const clipBlob = buildClipBlob(capturedChunks, initSnapshot);
+
+    if (needRestart) {
+      chunkBuffer.length = 0;
+      bufferDurationMs = 0;
+      initSegment = null;
+      updateBufferStats();
+      const restarted = startRecording();
+      if (restarted) {
+        clipStartTs = Date.now();
+      } else {
+        recordingActive = false;
+        clipStartTs = 0;
+        recBadge.style.visibility = 'hidden';
+        saveBtn.disabled = true;
+        log('Failed to restart recorder after saving clip.');
+      }
     }
-    const result = await Promise.race([
-      waitForChunk,
-      new Promise((resolve) => setTimeout(() => resolve('timeout'), TIMESLICE_MS + 150))
-    ]);
-    if (result === 'timeout' && resolverRef) {
-      const idx = pendingDataResolvers.indexOf(resolverRef);
-      if (idx !== -1) pendingDataResolvers.splice(idx, 1);
-    }
+
+    return clipBlob;
   }
 
   function startRecording() {
@@ -271,10 +287,15 @@
       }
     }
 
+    if (recorderCleanup) {
+      recorderCleanup();
+      recorderCleanup = null;
+    }
+
     const currentRecorder = recorder;
     mimeBadge.textContent = recMime ? recMime : (currentRecorder.mimeType || 'default');
 
-    currentRecorder.ondataavailable = (ev) => {
+    const handleData = (ev) => {
       if (!ev.data || ev.data.size === 0) return;
       if (!initSegment) initSegment = ev.data;
       if (!recordingActive) {
@@ -287,10 +308,9 @@
       }
       chunkBuffer.push(ev.data);
       updateBufferStats();
-      resolvePendingDataResolvers();
     };
 
-    currentRecorder.onstop = () => {
+    const handleStop = () => {
       if (recorder === currentRecorder) {
         recorder = null;
       }
@@ -298,7 +318,19 @@
         clearInterval(recorderPump);
         recorderPump = null;
       }
+      if (recorderCleanup) {
+        recorderCleanup();
+        recorderCleanup = null;
+      }
       log('Recorder stopped.');
+    };
+
+    currentRecorder.addEventListener('dataavailable', handleData);
+    currentRecorder.addEventListener('stop', handleStop);
+
+    recorderCleanup = () => {
+      currentRecorder.removeEventListener('dataavailable', handleData);
+      currentRecorder.removeEventListener('stop', handleStop);
     };
 
     currentRecorder.start(TIMESLICE_MS);
@@ -412,8 +444,7 @@
       log('No active motion recording to save.');
       return;
     }
-    await flushRecorderData();
-    const blob = collectClip();
+    const blob = await captureClipBlob();
     if (!blob || blob.size === 0) {
       log('Nothing to save yet.');
       return;
